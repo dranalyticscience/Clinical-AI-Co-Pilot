@@ -2,11 +2,16 @@
 import pandas as pd
 import streamlit as st
 import ast
+import sqlite3
 from io import BytesIO
 import base64
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
+from sklearn.linear_model import LinearRegression
+import numpy as np
+import requests
+import json
 
 # Custom CSS
 st.markdown("""
@@ -18,6 +23,12 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# SQLite setup
+conn = sqlite3.connect("patient_notes.db")
+c = conn.cursor()
+c.execute("CREATE TABLE IF NOT EXISTS notes (patient_id INTEGER PRIMARY KEY, note TEXT)")
+conn.commit()
+
 # PDF function
 def df_to_pdf(df, notes):
     buffer = BytesIO()
@@ -27,25 +38,51 @@ def df_to_pdf(df, notes):
     for _, row in df.iterrows():
         text = (f"ID: {row['id']}\nMeds: {row['meds']}\nInsight: {row['insight']}\n"
                 f"Recommendation: {row['med_suggestion']}\nBMI: {row['bmi']:.1f}\n"
-                f"Social: {row['social_note']}\nNotes: {notes}\n---")
+                f"Social: {row['social_note']}\nGlucose Trend: {row['trend']}\nNotes: {notes}\n---")
         story.append(Paragraph(text, styles["Normal"]))
         story.append(Spacer(1, 12))
     doc.build(story)
     buffer.seek(0)
     return buffer
 
-# Load data
-patients = pd.read_csv("patients_data.csv")
-patients["glucose"] = patients["glucose"].apply(ast.literal_eval)
+# Load mock FHIR data
+@st.cache_data
+def load_fhir_data():
+    # Use HAPI FHIR public server (mock data)
+    url = "http://hapi.fhir.org/baseR4/Observation?code=2339-0&_count=100"  # Glucose observations
+    try:
+        response = requests.get(url)
+        data = response.json()
+        patients_list = []
+        for i, entry in enumerate(data.get("entry", [])[:100]):  # Limit to 100
+            glucose = entry["resource"].get("valueQuantity", {}).get("value", 150)
+            patient_id = i + 1
+            patients_list.append({
+                "id": patient_id,
+                "glucose": [glucose + np.random.randint(-20, 20) for _ in range(4)],  # Simulate 4 days
+                "meds": np.random.choice(["metformin", "insulin", "none"]),
+                "zip_code": np.random.choice(["60601", "90210", "33101", "10001", "75201", "94102", "30301", "85001", "98101", "20001"]),
+                "hba1c": np.random.uniform(5.5, 10.0),
+                "weight_kg": np.random.randint(60, 110),
+                "height_m": np.random.uniform(1.5, 1.9)
+            })
+        return pd.DataFrame(patients_list)
+    except:
+        # Fallback to CSV if FHIR fails
+        df = pd.read_csv("patients_data.csv")
+        df["glucose"] = df["glucose"].apply(ast.literal_eval)
+        return df
+
+patients = load_fhir_data()
 patients["bmi"] = patients["weight_kg"] / (patients["height_m"] ** 2)
 
 # Functions
 def check_glucose(glucose_list, hba1c):
     avg = sum(glucose_list) / len(glucose_list)
     if avg > 150 or hba1c > 7.0:
-        return f"High risk (avg {avg:.1f}, HbA1c {hba1c}%) - review meds"
+        return f"High risk (avg {avg:.1f}, HbA1c {hba1c:.1f}%) - review meds"
     else:
-        return f"Stable (avg {avg:.1f}, HbA1c {hba1c}%)"
+        return f"Stable (avg {avg:.1f}, HbA1c {hba1c:.1f}%)"
 
 def check_social(zip_code):
     zip_map = {
@@ -81,10 +118,21 @@ def suggest_notes(insight, med_suggestion):
     else:
         return "Routine monitoring, next visit in 1 month."
 
+def predict_glucose_trend(glucose_list):
+    X = np.array(range(len(glucose_list))).reshape(-1, 1)
+    y = np.array(glucose_list)
+    model = LinearRegression()
+    model.fit(X, y)
+    next_day = len(glucose_list)
+    predicted = model.predict([[next_day]])[0]
+    trend = "rising" if model.coef_[0] > 0 else "falling" if model.coef_[0] < 0 else "stable"
+    return f"Predicted next day: {predicted:.1f} mg/dL (trend: {trend})"
+
 # Apply functions
 patients["insight"] = patients.apply(lambda row: check_glucose(row["glucose"], row["hba1c"]), axis=1)
 patients["social_note"] = patients["zip_code"].apply(check_social)
 patients["med_suggestion"] = patients.apply(lambda row: suggest_med(row["insight"], row["meds"], row["hba1c"], row["bmi"]), axis=1)
+patients["trend"] = patients["glucose"].apply(predict_glucose_trend)
 
 # Sidebar
 with st.sidebar:
@@ -112,7 +160,7 @@ with col1:
     st.markdown("### Patient Profile")
     st.write(f"**Current Meds**: {selected_patient['meds']}")
     st.write(f"**Weight**: {selected_patient['weight_kg']} kg")
-    st.write(f"**Height**: {selected_patient['height_m']} m")
+    st.write(f"**Height**: {selected_patient['height_m']:.2f} m")
     st.write(f"**BMI**: {selected_patient['bmi']:.1f} kg/m²")
     st.write(f"**Social Context**: {selected_patient['social_note']}")
 
@@ -127,23 +175,30 @@ with col2:
     else:
         st.write(f"**Recommendation**: {selected_patient['med_suggestion']}")
     st.write(f"**Target HbA1c**: <7.0% (ADA guideline)")
+    st.write(f"**Glucose Trend**: {selected_patient['trend']}")
 
-# Notes section with AI suggestion
+# Notes section with SQLite
 st.subheader("Doctor’s Notes", divider="blue")
+c.execute("SELECT note FROM notes WHERE patient_id = ?", (patient_id,))
+saved_note = c.fetchone()
 default_notes = suggest_notes(selected_patient["insight"], selected_patient["med_suggestion"])
-notes = st.text_area("Add notes for this patient:", value=default_notes, height=100, key=f"notes_{patient_id}")
+notes = st.text_area("Add notes for this patient:", value=saved_note[0] if saved_note else default_notes, height=100, key=f"notes_{patient_id}")
+if st.button("Save Notes"):
+    c.execute("INSERT OR REPLACE INTO notes (patient_id, note) VALUES (?, ?)", (patient_id, notes))
+    conn.commit()
+    st.success("Notes saved to database!")
 
 # Glucose graph
 st.subheader("Glucose Trend", divider="blue")
 glucose_data = pd.DataFrame({
-    "Day": [f"Day {i+1}" for i in range(len(selected_patient["glucose"]))],
-    "Glucose": selected_patient["glucose"]
+    "Day": [f"Day {i+1}" for i in range(len(selected_patient["glucose"]))] + ["Day 5 (Pred)"],
+    "Glucose": selected_patient["glucose"] + [float(selected_patient["trend"].split(": ")[1].split(" ")[0])]
 })
 st.line_chart(glucose_data.set_index("Day"), height=300, use_container_width=True)
 
 # Status summary table
 st.subheader("All Patients Overview", divider="blue")
-summary = patients[["id", "insight", "med_suggestion"]].copy()
+summary = patients[["id", "insight", "med_suggestion", "trend"]].copy()
 summary["Status"] = summary["insight"].apply(lambda x: "High Risk" if "High risk" in x else "Stable")
 st.dataframe(summary.style.applymap(lambda x: "color: red" if "High Risk" in str(x) else "color: green", subset=["Status"]))
 
@@ -159,4 +214,6 @@ st.download_button(
 
 # Footer
 st.markdown("---")
-st.write("Built by a physician for physicians | Data as of Feb 28, 2025")
+st.write("Built by a physician for physicians | Data as of Feb 28, 2025 | Hosted on Streamlit Cloud")
+conn.close()
+conn.close()

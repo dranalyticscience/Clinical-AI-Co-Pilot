@@ -4,3 +4,4 @@ scikit-learn
 numpy
 requests
 reportlab
+supabase
