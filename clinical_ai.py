@@ -2,7 +2,6 @@
 import pandas as pd
 import streamlit as st
 import ast
-import sqlite3
 from io import BytesIO
 import base64
 from reportlab.lib.pagesizes import letter
@@ -11,7 +10,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 from sklearn.linear_model import LinearRegression
 import numpy as np
 import requests
-import json
+from supabase import create_client, Client
 
 # Custom CSS
 st.markdown("""
@@ -23,11 +22,33 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# SQLite setup
-conn = sqlite3.connect("patient_notes.db")
-c = conn.cursor()
-c.execute("CREATE TABLE IF NOT EXISTS notes (patient_id INTEGER PRIMARY KEY, note TEXT)")
-conn.commit()
+# Supabase setup
+# Supabase setup
+import os
+if "STREAMLIT_CLOUD" in os.environ:  # Detect if running in Streamlit Cloud
+    SUPABASE_URL = st.secrets["https://uhreaacmqpphxzadibsy.supabase.co"]
+    SUPABASE_KEY = st.secrets["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVocmVhYWNtcXBwaHh6YWRpYnN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDA3OTU3MTUsImV4cCI6MjA1NjM3MTcxNX0.OOuZODMaYVePmEiH3ap56OGKwNO825hccEkyXiC8iFs"]
+else:  # Local fallback
+    SUPABASE_URL = "https://uhreaacmqpphxzadibsy.supabase.co"  # Your Supabase URL
+    SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVocmVhYWNtcXBwaHh6YWRpYnN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDA3OTU3MTUsImV4cCI6MjA1NjM3MTcxNX0.OOuZODMaYVePmEiH3ap56OGKwNO825hccEkyXiC8iFs"  # Replace with your Anon Key from Supabase Settings > API
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# FHIR auth setup (mocked for real prep)
+FHIR_BASE_URL = "http://hapi.fhir.org/baseR4"
+FHIR_TOKEN_URL = "https://mock-auth-server.com/oauth/token"  # Simulated
+FHIR_CLIENT_ID = "your-client-id"  # Replace with real FHIR creds later
+FHIR_CLIENT_SECRET = "your-client-secret"  # Replace with real FHIR creds later
+
+@st.cache_data
+def get_fhir_token():
+    try:
+        response = requests.post(
+            FHIR_TOKEN_URL,
+            data={"grant_type": "client_credentials", "client_id": FHIR_CLIENT_ID, "client_secret": FHIR_CLIENT_SECRET}
+        )
+        return "mock-access-token"  # Simulated (real: response.json()["access_token"])
+    except:
+        return "mock-access-token"
 
 # PDF function
 def df_to_pdf(df, notes):
@@ -45,30 +66,41 @@ def df_to_pdf(df, notes):
     buffer.seek(0)
     return buffer
 
-# Load mock FHIR data
+# Load FHIR data (2000 patients)
 @st.cache_data
 def load_fhir_data():
-    # Use HAPI FHIR public server (mock data)
-    url = "http://hapi.fhir.org/baseR4/Observation?code=2339-0&_count=100"  # Glucose observations
+    token = get_fhir_token()
+    url = f"{FHIR_BASE_URL}/Observation?code=2339-0&_count=100"  # Start with 100 per page
+    headers = {"Authorization": f"Bearer {token}"}
+    patients_list = []
+    total_patients = 2000
     try:
-        response = requests.get(url)
-        data = response.json()
-        patients_list = []
-        for i, entry in enumerate(data.get("entry", [])[:100]):  # Limit to 100
-            glucose = entry["resource"].get("valueQuantity", {}).get("value", 150)
-            patient_id = i + 1
-            patients_list.append({
-                "id": patient_id,
-                "glucose": [glucose + np.random.randint(-20, 20) for _ in range(4)],  # Simulate 4 days
-                "meds": np.random.choice(["metformin", "insulin", "none"]),
-                "zip_code": np.random.choice(["60601", "90210", "33101", "10001", "75201", "94102", "30301", "85001", "98101", "20001"]),
-                "hba1c": np.random.uniform(5.5, 10.0),
-                "weight_kg": np.random.randint(60, 110),
-                "height_m": np.random.uniform(1.5, 1.9)
-            })
+        while len(patients_list) < total_patients:
+            response = requests.get(url, headers=headers)
+            data = response.json()
+            entries = data.get("entry", [])
+            for i, entry in enumerate(entries):
+                if len(patients_list) >= total_patients:
+                    break
+                glucose = entry["resource"].get("valueQuantity", {}).get("value", 150)
+                patient_id = len(patients_list) + 1
+                patients_list.append({
+                    "id": patient_id,
+                    "glucose": [glucose + np.random.randint(-20, 20) for _ in range(7)],
+                    "meds": np.random.choice(["metformin", "insulin", "none"]),
+                    "zip_code": np.random.choice(["60601", "90210", "33101", "10001", "75201", "94102", "30301", "85001", "98101", "20001"]),
+                    "hba1c": np.random.uniform(5.5, 10.0),
+                    "weight_kg": np.random.randint(60, 110),
+                    "height_m": np.random.uniform(1.5, 1.9)
+                })
+            # Pagination: Get next page URL
+            next_link = next((link["url"] for link in data.get("link", []) if link["relation"] == "next"), None)
+            if not next_link or len(entries) == 0:
+                break
+            url = next_link
         return pd.DataFrame(patients_list)
     except:
-        # Fallback to CSV if FHIR fails
+        # Fallback to CSV
         df = pd.read_csv("patients_data.csv")
         df["glucose"] = df["glucose"].apply(ast.literal_eval)
         return df
@@ -177,21 +209,20 @@ with col2:
     st.write(f"**Target HbA1c**: <7.0% (ADA guideline)")
     st.write(f"**Glucose Trend**: {selected_patient['trend']}")
 
-# Notes section with SQLite
+# Notes section with Supabase
 st.subheader("Doctor’s Notes", divider="blue")
-c.execute("SELECT note FROM notes WHERE patient_id = ?", (patient_id,))
-saved_note = c.fetchone()
+response = supabase.table("notes").select("note").eq("patient_id", patient_id).execute()
+saved_note = response.data[0]["note"] if response.data else None
 default_notes = suggest_notes(selected_patient["insight"], selected_patient["med_suggestion"])
-notes = st.text_area("Add notes for this patient:", value=saved_note[0] if saved_note else default_notes, height=100, key=f"notes_{patient_id}")
+notes = st.text_area("Add notes for this patient:", value=saved_note if saved_note else default_notes, height=100, key=f"notes_{patient_id}")
 if st.button("Save Notes"):
-    c.execute("INSERT OR REPLACE INTO notes (patient_id, note) VALUES (?, ?)", (patient_id, notes))
-    conn.commit()
-    st.success("Notes saved to database!")
+    supabase.table("notes").upsert({"patient_id": patient_id, "note": notes}).execute()
+    st.success("Notes saved to cloud database!")
 
 # Glucose graph
 st.subheader("Glucose Trend", divider="blue")
 glucose_data = pd.DataFrame({
-    "Day": [f"Day {i+1}" for i in range(len(selected_patient["glucose"]))] + ["Day 5 (Pred)"],
+    "Day": [f"Day {i+1}" for i in range(len(selected_patient["glucose"]))] + ["Day 8 (Pred)"],
     "Glucose": selected_patient["glucose"] + [float(selected_patient["trend"].split(": ")[1].split(" ")[0])]
 })
 st.line_chart(glucose_data.set_index("Day"), height=300, use_container_width=True)
@@ -215,5 +246,3 @@ st.download_button(
 # Footer
 st.markdown("---")
 st.write("Built by a physician for physicians | Data as of Feb 28, 2025 | Hosted on Streamlit Cloud")
-conn.close()
-conn.close()
