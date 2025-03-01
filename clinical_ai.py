@@ -34,21 +34,25 @@ else:  # Local fallback
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # FHIR auth setup (mocked for real prep)
-FHIR_BASE_URL = "http://hapi.fhir.org/baseR4"
-FHIR_TOKEN_URL = "https://mock-auth-server.com/oauth/token"  # Simulated
-FHIR_CLIENT_ID = "your-client-id"  # Replace with real FHIR creds later
-FHIR_CLIENT_SECRET = "your-client-secret"  # Replace with real FHIR creds later
+FHIR_BASE_URL = "http://hapi.fhir.org/baseR4"  # Sandbox base URL
+FHIR_TOKEN_URL = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token"  # Epic sandbox token URL
+FHIR_CLIENT_ID = "0591dc6d-3fe6-4290-9990-4655dab376bf"  # Paste your Non-Production Client ID here
+FHIR_CLIENT_SECRET = ""  # Paste here if generated, else leave as "" for now
 
 @st.cache_data
 def get_fhir_token():
     try:
         response = requests.post(
             FHIR_TOKEN_URL,
-            data={"grant_type": "client_credentials", "client_id": FHIR_CLIENT_ID, "client_secret": FHIR_CLIENT_SECRET}
+            data={
+                "grant_type": "client_credentials",
+                "client_id": FHIR_CLIENT_ID,
+                "client_secret": FHIR_CLIENT_SECRET if FHIR_CLIENT_SECRET else None
+            }
         )
-        return "mock-access-token"  # Simulated (real: response.json()["access_token"])
+        return response.json()["access_token"]
     except:
-        return "mock-access-token"
+        return "mock-access-token"  # Fallback for now
 
 # PDF function
 def df_to_pdf(df, notes):
