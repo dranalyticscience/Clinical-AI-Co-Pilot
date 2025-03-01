@@ -77,7 +77,7 @@ def load_fhir_data():
     url = f"{FHIR_BASE_URL}/Observation?code=2339-0&_count=100"  # Start with 100 per page
     headers = {"Authorization": f"Bearer {token}"}
     patients_list = []
-    total_patients = 2000
+    total_patients = 5000
     try:
         while len(patients_list) < total_patients:
             response = requests.get(url, headers=headers)
