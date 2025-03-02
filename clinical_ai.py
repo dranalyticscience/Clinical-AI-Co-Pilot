@@ -32,11 +32,12 @@ else:  # Local testing
     SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVocmVhYWNtcXBwaHh6YWRpYnN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDA3OTU3MTUsImV4cCI6MjA1NjM3MTcxNX0.OOuZODMaYVePmEiH3ap56OGKwNO825hccEkyXiC8iFs"  # Replace with your Supabase Anon Key
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# FHIR auth setup (Epic sandbox)
-FHIR_BASE_URL = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
+# FHIR auth setup (Epic sandbox with HAPI fallback)
+FHIR_EPIC_BASE_URL = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
+FHIR_HAPI_BASE_URL = "http://hapi.fhir.org/baseR4"  # Fallback
 FHIR_TOKEN_URL = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token"
-FHIR_CLIENT_ID = "0591dc6d-3fe6-4290-9990-4655dab376bf"  # Replace with your Epic Non-Production Client ID
-FHIR_CLIENT_SECRET = ""  # Empty until Epic provides it
+FHIR_CLIENT_ID = ""  # Replace with your Epic Non-Production Client ID
+FHIR_CLIENT_SECRET = "0591dc6d-3fe6-4290-9990-4655dab376bf"  # Empty until Epic provides it
 
 @st.cache_data
 def get_fhir_token():
@@ -48,10 +49,12 @@ def get_fhir_token():
                 "client_id": FHIR_CLIENT_ID
             }
         )
-        return response.json()["access_token"]
+        response.raise_for_status()  # Raise exception for bad status
+        token_data = response.json()
+        return token_data["access_token"]
     except Exception as e:
-        st.write(f"Token error: {e}")
-        return "mock-access-token"  # Fallback
+        st.write(f"Epic token error: {e} - Falling back to HAPI FHIR")
+        return "mock-access-token"  # Fallback for HAPI
 
 # PDF function
 def df_to_pdf(df, notes):
@@ -78,14 +81,23 @@ def load_fhir_data():
     patients_list = []
     total_patients = 5000
     try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+    except Exception as e:
+        st.write(f"Epic FHIR error: {e} - Switching to HAPI FHIR")
+        url = f"{FHIR_HAPI_BASE_URL}/Observation?code=2339-0&_count=100"
+
+    try:
         while len(patients_list) < total_patients:
             response = requests.get(url, headers=headers)
+            response.raise_for_status()
             data = response.json()
             entries = data.get("entry", [])
             for i, entry in enumerate(entries):
                 if len(patients_list) >= total_patients:
                     break
-                glucose = entry["resource"].get("valueQuantity", {}).get("value", 150)
+                glucose = entry.get("valueQuantity", {}).get("value", 150)
                 patient_id = len(patients_list) + 1
                 patients_list.append({
                     "id": patient_id,
@@ -102,7 +114,7 @@ def load_fhir_data():
             url = next_link
         return pd.DataFrame(patients_list)
     except Exception as e:
-        st.write(f"FHIR error: {e}")
+        st.write(f"FHIR error: {e} - Using fallback CSV")
         df = pd.read_csv("patients_data.csv")
         df["glucose"] = df["glucose"].apply(ast.literal_eval)
         return df
