@@ -80,7 +80,7 @@ def load_fhir_data():
     url = f"{base_url}/Observation?code=2339-0&_count=100"  # Glucose, 100 per page
     headers = {"Authorization": f"Bearer {token}"}
     patients_list = []
-    total_patients = 5000
+    total_patients = 10000
     try:
         response = requests.get(url, headers=headers)
         response.raise_for_status()
