@@ -36,8 +36,8 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 FHIR_EPIC_BASE_URL = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
 FHIR_HAPI_BASE_URL = "http://hapi.fhir.org/baseR4"  # Fallback
 FHIR_TOKEN_URL = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token"
-FHIR_CLIENT_ID = ""  # Replace with your Epic Non-Production Client ID
-FHIR_CLIENT_SECRET = "0591dc6d-3fe6-4290-9990-4655dab376bf"  # Empty until Epic provides it
+FHIR_CLIENT_ID = "0591dc6d-3fe6-4290-9990-4655dab376bf"  # Replace with your Epic Non-Production Client ID
+FHIR_CLIENT_SECRET = ""  # Empty until Epic provides it
 
 @st.cache_data
 def get_fhir_token():
@@ -56,27 +56,12 @@ def get_fhir_token():
         st.write(f"Epic token error: {e} - Falling back to HAPI FHIR")
         return "mock-access-token"  # Fallback for HAPI
 
-# PDF function
-def df_to_pdf(df, notes):
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter)
-    styles = getSampleStyleSheet()
-    story = []
-    for _, row in df.iterrows():
-        text = (f"ID: {row['id']}\nMeds: {row['meds']}\nInsight: {row['insight']}\n"
-                f"Recommendation: {row['med_suggestion']}\nBMI: {row['bmi']:.1f}\n"
-                f"Social: {row['social_note']}\nGlucose Trend: {row['trend']}\nNotes: {notes}\n---")
-        story.append(Paragraph(text, styles["Normal"]))
-        story.append(Spacer(1, 12))
-    doc.build(story)
-    buffer.seek(0)
-    return buffer
-
 # Load FHIR data (5000 patients)
 @st.cache_data
 def load_fhir_data():
     token = get_fhir_token()
-    url = f"{FHIR_BASE_URL}/Observation?code=2339-0&_count=100"  # Glucose, 100 per page
+    base_url = FHIR_EPIC_BASE_URL  # Start with Epic
+    url = f"{base_url}/Observation?code=2339-0&_count=100"  # Glucose, 100 per page
     headers = {"Authorization": f"Bearer {token}"}
     patients_list = []
     total_patients = 5000
@@ -86,7 +71,8 @@ def load_fhir_data():
         data = response.json()
     except Exception as e:
         st.write(f"Epic FHIR error: {e} - Switching to HAPI FHIR")
-        url = f"{FHIR_HAPI_BASE_URL}/Observation?code=2339-0&_count=100"
+        base_url = FHIR_HAPI_BASE_URL
+        url = f"{base_url}/Observation?code=2339-0&_count=100"
 
     try:
         while len(patients_list) < total_patients:
