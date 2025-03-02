@@ -11,6 +11,7 @@ from sklearn.linear_model import LinearRegression
 import numpy as np
 import requests
 from supabase import create_client, Client
+import os
 
 # Custom CSS
 st.markdown("""
@@ -23,21 +24,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Supabase setup
-# Supabase setup
-import os
-if "STREAMLIT_CLOUD" in os.environ:  # Detect if running in Streamlit Cloud
-    SUPABASE_URL = st.secrets["https://uhreaacmqpphxzadibsy.supabase.co"]
-    SUPABASE_KEY = st.secrets["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVocmVhYWNtcXBwaHh6YWRpYnN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDA3OTU3MTUsImV4cCI6MjA1NjM3MTcxNX0.OOuZODMaYVePmEiH3ap56OGKwNO825hccEkyXiC8iFs"]
-else:  # Local fallback
+if "STREAMLIT_CLOUD" in os.environ:  # Cloud deployment
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+else:  # Local testing
     SUPABASE_URL = "https://uhreaacmqpphxzadibsy.supabase.co"  # Your Supabase URL
-    SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVocmVhYWNtcXBwaHh6YWRpYnN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDA3OTU3MTUsImV4cCI6MjA1NjM3MTcxNX0.OOuZODMaYVePmEiH3ap56OGKwNO825hccEkyXiC8iFs"  # Replace with your Anon Key from Supabase Settings > API
+    SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVocmVhYWNtcXBwaHh6YWRpYnN5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDA3OTU3MTUsImV4cCI6MjA1NjM3MTcxNX0.OOuZODMaYVePmEiH3ap56OGKwNO825hccEkyXiC8iFs"  # Replace with your Supabase Anon Key
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# FHIR auth setup (mocked for real prep)
-FHIR_BASE_URL = "http://hapi.fhir.org/baseR4"  # Sandbox base URL
-FHIR_TOKEN_URL = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token"  # Epic sandbox token URL
-FHIR_CLIENT_ID = "0591dc6d-3fe6-4290-9990-4655dab376bf"  # Paste your Non-Production Client ID here
-FHIR_CLIENT_SECRET = ""  # Paste here if generated, else leave as "" for now
+# FHIR auth setup (Epic sandbox)
+FHIR_BASE_URL = "https://fhir.epic.com/interconnect-fhir-oauth/api/FHIR/R4"
+FHIR_TOKEN_URL = "https://fhir.epic.com/interconnect-fhir-oauth/oauth2/token"
+FHIR_CLIENT_ID = "0591dc6d-3fe6-4290-9990-4655dab376bf"  # Replace with your Epic Non-Production Client ID
+FHIR_CLIENT_SECRET = ""  # Empty until Epic provides it
 
 @st.cache_data
 def get_fhir_token():
@@ -46,13 +45,13 @@ def get_fhir_token():
             FHIR_TOKEN_URL,
             data={
                 "grant_type": "client_credentials",
-                "client_id": FHIR_CLIENT_ID,
-                "client_secret": FHIR_CLIENT_SECRET if FHIR_CLIENT_SECRET else None
+                "client_id": FHIR_CLIENT_ID
             }
         )
         return response.json()["access_token"]
-    except:
-        return "mock-access-token"  # Fallback for now
+    except Exception as e:
+        st.write(f"Token error: {e}")
+        return "mock-access-token"  # Fallback
 
 # PDF function
 def df_to_pdf(df, notes):
@@ -70,11 +69,11 @@ def df_to_pdf(df, notes):
     buffer.seek(0)
     return buffer
 
-# Load FHIR data (2000 patients)
+# Load FHIR data (5000 patients)
 @st.cache_data
 def load_fhir_data():
     token = get_fhir_token()
-    url = f"{FHIR_BASE_URL}/Observation?code=2339-0&_count=100"  # Start with 100 per page
+    url = f"{FHIR_BASE_URL}/Observation?code=2339-0&_count=100"  # Glucose, 100 per page
     headers = {"Authorization": f"Bearer {token}"}
     patients_list = []
     total_patients = 5000
@@ -97,14 +96,13 @@ def load_fhir_data():
                     "weight_kg": np.random.randint(60, 110),
                     "height_m": np.random.uniform(1.5, 1.9)
                 })
-            # Pagination: Get next page URL
             next_link = next((link["url"] for link in data.get("link", []) if link["relation"] == "next"), None)
             if not next_link or len(entries) == 0:
                 break
             url = next_link
         return pd.DataFrame(patients_list)
-    except:
-        # Fallback to CSV
+    except Exception as e:
+        st.write(f"FHIR error: {e}")
         df = pd.read_csv("patients_data.csv")
         df["glucose"] = df["glucose"].apply(ast.literal_eval)
         return df
@@ -220,8 +218,11 @@ saved_note = response.data[0]["note"] if response.data else None
 default_notes = suggest_notes(selected_patient["insight"], selected_patient["med_suggestion"])
 notes = st.text_area("Add notes for this patient:", value=saved_note if saved_note else default_notes, height=100, key=f"notes_{patient_id}")
 if st.button("Save Notes"):
-    supabase.table("notes").upsert({"patient_id": patient_id, "note": notes}).execute()
-    st.success("Notes saved to cloud database!")
+    try:
+        supabase.table("notes").upsert({"patient_id": int(patient_id), "note": str(notes)}).execute()
+        st.success("Notes saved to cloud database!")
+    except Exception as e:
+        st.error(f"Error saving notes: {e}")
 
 # Glucose graph
 st.subheader("Glucose Trend", divider="blue")
