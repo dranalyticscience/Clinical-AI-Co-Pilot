@@ -56,6 +56,22 @@ def get_fhir_token():
         st.write(f"Epic token error: {e} - Falling back to HAPI FHIR")
         return "mock-access-token"  # Fallback for HAPI
 
+# PDF function
+def df_to_pdf(df, notes):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    story = []
+    for _, row in df.iterrows():
+        text = (f"ID: {row['id']}\nMeds: {row['meds']}\nInsight: {row['insight']}\n"
+                f"Recommendation: {row['med_suggestion']}\nBMI: {row['bmi']:.1f}\n"
+                f"Social: {row['social_note']}\nGlucose Trend: {row['trend']}\nNotes: {notes}\n---")
+        story.append(Paragraph(text, styles["Normal"]))
+        story.append(Spacer(1, 12))
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
 # Load FHIR data (5000 patients)
 @st.cache_data
 def load_fhir_data():
